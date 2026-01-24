@@ -6,10 +6,10 @@
     <form method="post" action="{{ url_for('settings') }}">
         <label class="toggle-switch">
             <input type="checkbox" name="scheduler_disabled" {% if scheduler_disabled %}checked{% endif %}>
-            Disable Scheduler (API calls and emails)
+            Disable Scheduler (API calls and reminders)
         </label>
         <p class="help-text">
-            When the scheduler is disabled, Forgotten Movies will skip automatic Overseerr/Tautulli scans and will not send reminder emails.
+            When the scheduler is disabled, Forgotten Movies will skip automatic Overseerr/Tautulli scans and will not send reminder messages.
             Manual "Run Now" actions still work.
         </p>
         <button type="submit">Save</button>
@@ -20,7 +20,7 @@
     <h2>Update Watch Status</h2>
     <p>Pressing this will check to see if people have watched what we have reminded them on.</p>
     <p class="help-text">
-        This checks all unwatched sent emails against Tautulli to see if users have watched the content.
+        This checks all unwatched sent reminders against Tautulli to see if users have watched the content.
         This happens automatically during scheduled runs, but you can trigger it manually here.
     </p>
     <form method="post" action="{{ url_for('update_watch_status') }}">

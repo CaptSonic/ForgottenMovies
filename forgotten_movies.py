@@ -1,20 +1,40 @@
 import logging
-import requests
 import smtplib
 import ssl
 import time
+try:
+    import requests  # type: ignore[import-not-found]
+except ModuleNotFoundError as exc:
+    raise ModuleNotFoundError(
+        "Missing dependency 'requests'. Install it with 'pip install -r requirements.txt'."
+    ) from exc
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.utils import formatdate, make_msgid
 from datetime import datetime, timedelta
 from logging.handlers import RotatingFileHandler
 from threading import RLock
-from tinydb import TinyDB, Query
-from tinydb.table import Document
+try:
+    from tinydb import TinyDB, Query  # type: ignore[import-not-found]
+    from tinydb.table import Document  # type: ignore[import-not-found]
+except ModuleNotFoundError as exc:
+    raise ModuleNotFoundError(
+        "Missing dependency 'tinydb'. Install it with 'pip install -r requirements.txt'."
+    ) from exc
 import os
 import shutil
-from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
-from jinja2 import Template, TemplateError
+try:
+    from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired  # type: ignore[import-not-found]
+except ModuleNotFoundError as exc:
+    raise ModuleNotFoundError(
+        "Missing dependency 'itsdangerous'. Install it with 'pip install -r requirements.txt'."
+    ) from exc
+try:
+    from jinja2 import Template, TemplateError  # type: ignore[import-not-found]
+except ModuleNotFoundError as exc:
+    raise ModuleNotFoundError(
+        "Missing dependency 'jinja2'. Install it with 'pip install -r requirements.txt'."
+    ) from exc
 from typing import NamedTuple
 
 TAUTULLI_API_KEY = os.getenv("TAUTULLI_API_KEY")
@@ -47,6 +67,8 @@ DEBUG_MODE = os.getenv("DEBUG_MODE", "false").lower() == "true"
 DEBUG_EMAIL = os.getenv("DEBUG_EMAIL")
 DEBUG_MAX_EMAILS = int(os.getenv("DEBUG_MAX_EMAILS", 2))
 
+DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
+
 # Optional self-service unsubscribe feature
 UNSUBSCRIBE_SECRET_KEY = os.getenv("UNSUBSCRIBE_SECRET_KEY")
 _base_url = os.getenv("BASE_URL")
@@ -57,7 +79,7 @@ UNSUBSCRIBE_ENABLED = bool(UNSUBSCRIBE_SECRET_KEY and BASE_URL)
 REQUIRED_ENV = {
     "OVERSEERR_URL": OVERSEERR_URL,
     "OVERSEERR_API_KEY": OVERSEERR_API_KEY,
-    # ...
+    "DISCORD_BOT_TOKEN": DISCORD_BOT_TOKEN,
 }
 missing = [name for name, value in REQUIRED_ENV.items() if not value]
 if missing:
@@ -105,6 +127,16 @@ EMAIL_TEMPLATE_CACHE: Template | None = None
 EMAIL_TEMPLATE_CACHE_PATH: str | None = None
 EMAIL_TEMPLATE_MTIME = None
 
+DEFAULT_DISCORD_TEMPLATE_PATH = os.path.join(TEMPLATES_DIR, "discord_template.txt")
+DISCORD_TEMPLATE_ORIGINAL_PATH = os.path.join(DATA_DIR, "discord_template_original.txt")
+CUSTOM_DISCORD_TEMPLATE_PATH = os.getenv(
+    "DISCORD_TEMPLATE_PATH",
+    os.path.join(DATA_DIR, "discord_template.txt"),
+)
+DISCORD_TEMPLATE_CACHE: Template | None = None
+DISCORD_TEMPLATE_CACHE_PATH: str | None = None
+DISCORD_TEMPLATE_MTIME = None
+
 
 class SafeDict(dict):
     def __missing__(self, key):
@@ -125,11 +157,32 @@ def ensure_email_template() -> None:
         ) from exc
 
 
+def ensure_discord_template() -> None:
+    try:
+        source = DEFAULT_DISCORD_TEMPLATE_PATH
+        if not source or not os.path.exists(source):
+            raise FileNotFoundError(f"Default discord template not found at {source}")
+        os.makedirs(os.path.dirname(DISCORD_TEMPLATE_ORIGINAL_PATH), exist_ok=True)
+        shutil.copyfile(source, DISCORD_TEMPLATE_ORIGINAL_PATH)
+        logger.debug("Refreshed default discord template at %s", DISCORD_TEMPLATE_ORIGINAL_PATH)
+    except Exception as exc:
+        raise RuntimeError(
+            f"Unable to prepare discord template at {DISCORD_TEMPLATE_ORIGINAL_PATH}: {exc}"
+        ) from exc
+
+
 def _resolve_email_template_path() -> str:
     custom_path = CUSTOM_EMAIL_TEMPLATE_PATH
     if custom_path and os.path.exists(custom_path):
         return custom_path
     return EMAIL_TEMPLATE_ORIGINAL_PATH
+
+
+def _resolve_discord_template_path() -> str:
+    custom_path = CUSTOM_DISCORD_TEMPLATE_PATH
+    if custom_path and os.path.exists(custom_path):
+        return custom_path
+    return DISCORD_TEMPLATE_ORIGINAL_PATH
 
 
 def load_email_template() -> Template:
@@ -159,7 +212,35 @@ def load_email_template() -> Template:
         raise RuntimeError(f"Failed to load email template: {exc}") from exc
 
 
+def load_discord_template() -> Template:
+    ensure_discord_template()
+    template_path = _resolve_discord_template_path()
+    global DISCORD_TEMPLATE_CACHE, DISCORD_TEMPLATE_MTIME, DISCORD_TEMPLATE_CACHE_PATH
+    try:
+        mtime = os.path.getmtime(template_path)
+        if (
+            DISCORD_TEMPLATE_CACHE is None
+            or DISCORD_TEMPLATE_MTIME != mtime
+            or DISCORD_TEMPLATE_CACHE_PATH != template_path
+        ):
+            with open(template_path, "r", encoding="utf-8") as handle:
+                source = handle.read()
+                if not source.strip():
+                    raise RuntimeError("Discord template is empty.")
+                DISCORD_TEMPLATE_CACHE = Template(source)
+                DISCORD_TEMPLATE_MTIME = mtime
+                DISCORD_TEMPLATE_CACHE_PATH = template_path
+        return DISCORD_TEMPLATE_CACHE
+    except FileNotFoundError as exc:
+        raise RuntimeError(f"Discord template not found at {template_path}") from exc
+    except TemplateError as exc:
+        raise RuntimeError(f"Discord template compilation failed: {exc}") from exc
+    except Exception as exc:
+        raise RuntimeError(f"Failed to load discord template: {exc}") from exc
+
+
 ensure_email_template()
+ensure_discord_template()
 
 
 def build_email_body(
@@ -202,6 +283,54 @@ def build_email_body(
         raise RuntimeError(f"Email template formatting failed: {exc}") from exc
     except Exception as exc:
         raise RuntimeError(f"Email template rendering failed: {exc}") from exc
+
+
+def build_discord_message(
+    plex_username: str,
+    media_type: str,
+    title: str,
+    plex_url: str | None,
+    poster_url: str | None,
+    mobile_url: str | None,
+) -> str:
+    template = load_discord_template()
+    context = SafeDict(
+        plex_username=plex_username,
+        media_type=media_type,
+        title=title,
+        time_since_text=DAYS_SINCE_REQUEST_EMAIL_TEXT,
+        plex_url=plex_url or "",
+        poster_url=poster_url or "",
+        mobile_url=mobile_url or "",
+        request_url=REQUEST_URL or "",
+        admin_name=ADMIN_NAME or "",
+    )
+    try:
+        return template.render(**context)
+    except TemplateError as exc:
+        raise RuntimeError(f"Discord template formatting failed: {exc}") from exc
+    except Exception as exc:
+        raise RuntimeError(f"Discord template rendering failed: {exc}") from exc
+
+
+def _extract_discord_id(user_payload: dict) -> str | None:
+    if not user_payload:
+        return None
+    settings = user_payload.get("settings") or {}
+    candidates = [
+        settings.get("discordUserId"),
+        settings.get("discord_user_id"),
+        settings.get("discordId"),
+        settings.get("discord_id"),
+        settings.get("Discord User ID"),
+        user_payload.get("discordUserId"),
+        user_payload.get("discordId"),
+        user_payload.get("discord_user_id"),
+    ]
+    for candidate in candidates:
+        if candidate:
+            return str(candidate).strip()
+    return None
 
 
 def set_log_level(level_name: str) -> bool:
@@ -440,11 +569,11 @@ def get_recent_sent_emails(limit: int | None = None):
 
 def check_unwatched_emails_status() -> dict[str, int]:
     """
-    Check all unwatched sent emails to see if users have watched the content.
+    Check all unwatched sent reminders to see if users have watched the content.
     Updates date_watched field when content is found in watch history.
     Returns dict with counts of checked, watched, and failed items.
     """
-    logger.info("Starting watch status check for unwatched sent emails")
+    logger.info("Starting watch status check for unwatched sent reminders")
 
     # Record the timestamp of this check
     set_last_watch_status_check(datetime.now())
@@ -463,7 +592,7 @@ def check_unwatched_emails_status() -> dict[str, int]:
         tmdb_id = rec.get("tmdbId")
 
         if not plex_username or not rating_key or not media_type:
-            logger.debug("Skipping email record with missing data: %s", rec)
+            logger.debug("Skipping reminder record with missing data: %s", rec)
             continue
 
         try:
@@ -640,6 +769,9 @@ def get_tmdb_poster(tmdb_id, media_type):
 
 # Check Tautulli watch history for a specific user and media
 def has_user_watched_media(user, rating_key, media_type):
+    tautulli_url = (TAUTULLI_URL or "").strip()
+    if not tautulli_url:
+        raise RuntimeError("TAUTULLI_URL is not configured")
     params = {
         'apikey': TAUTULLI_API_KEY,
         'cmd': 'get_history',
@@ -650,7 +782,7 @@ def has_user_watched_media(user, rating_key, media_type):
         params['grandparent_rating_key'] = rating_key
     else:
         params['rating_key'] = rating_key
-    response = requests.get(TAUTULLI_URL, params=params)
+    response = requests.get(tautulli_url, params=params)
     response.raise_for_status()
     watch_history = response.json()['response']['data']['data']
     if DEBUG_MODE:
@@ -661,17 +793,20 @@ def has_user_watched_media(user, rating_key, media_type):
 # Get metadata from Tautulli
 def get_tautulli_metadata(rating_key):
     # Fetch metadata from Tautulli
+    tautulli_url = (TAUTULLI_URL or "").strip()
+    if not tautulli_url:
+        raise RuntimeError("TAUTULLI_URL is not configured")
     params = {
         'apikey': TAUTULLI_API_KEY,
         'cmd': 'get_metadata',
         'rating_key': rating_key
     }
-    response = requests.get(TAUTULLI_URL, params=params)
+    response = requests.get(tautulli_url, params=params)
     response.raise_for_status()
     metadata = response.json()['response']['data']
     return metadata
 
-EMAIL_USER_DEFAULTS = {
+EMAIL_USER_DEFAULTS: dict[str, object] = {
     'last_email_at': None,
     'next_email_at': None,
     'unsubscribed_at': None,
@@ -696,7 +831,7 @@ def _ensure_email_user_record(email: str) -> dict | None:
                     raise RuntimeError("Unable to allocate unique doc_id for email_users")
                 existing_doc = email_users_db.get(doc_id=doc_id)
 
-            payload = {'email': normalized}
+            payload: dict[str, object] = {'email': normalized}
             payload.update(EMAIL_USER_DEFAULTS)
             email_users_db.upsert(Document(payload, doc_id=doc_id), EmailUser.email == normalized)
             record = email_users_db.get(doc_id=doc_id)
@@ -803,36 +938,61 @@ def _attempt_send_request(
     now_dt = now_dt or datetime.now()
     request_id = record.get('id')
     email_value = (record.get('email') or '').strip()
-    plex_username = record.get('plexUsername')
+    plex_username = (record.get('plexUsername') or '').strip()
     rating_key = record.get('ratingkey')
-    media_type = record.get('mediaType')
+    media_type = (record.get('mediaType') or '').strip()
     plex_url = record.get('plexUrl')
     mobile_url = record.get('mobilePlexUrl')
     tmdb_id = record.get('tmdbId')
     poster_url = record.get('posterUrl', '')
+    discord_id = record.get('discordId')
     _, media_raw = _resolve_media_added(record)
     title_lookup = (metadata_updates or {}).get(request_id)
     title = title_lookup if title_lookup else (record.get('title') or "Unknown")
 
     if not email_value:
-        logger.warning("Skipping request %s; missing email address.", request_id)
-        return SendOutcome(False, True, "Missing email address for request.", title, None, None)
+        logger.warning("Skipping request %s; missing contact email.", request_id)
+        return SendOutcome(False, True, "Missing contact email for request.", title, None, None)
+
+    if not discord_id:
+        logger.warning("Skipping request %s; missing Discord user ID.", request_id)
+        return SendOutcome(False, True, "Missing Discord user ID for request.", title, None, None)
+
+    if not plex_username or not rating_key or not media_type:
+        logger.warning("Skipping request %s; missing Plex user/media metadata.", request_id)
+        return SendOutcome(False, True, "Missing Plex user/media metadata for request.", title, None, None)
 
     if respect_cycle and not record.get('eligible_for_email', False):
         request_db.update({'eligible_for_email': True}, Request.id == request_id)
-        logger.info("Deferring email for %s; waiting one scheduler cycle.", email_value)
-        return SendOutcome(False, False, "Waiting one scheduler cycle before emailing.", title, None, None)
+        logger.info("Deferring reminder for request %s; waiting one scheduler cycle.", request_id)
+        return SendOutcome(False, False, "Waiting one scheduler cycle before messaging.", title, None, None)
 
     if is_unsubscribed(email_value):
-        logger.info("Skipping email to %s for %s (%s); address is unsubscribed.", email_value, title, rating_key)
-        return SendOutcome(False, False, "Address is unsubscribed; reminder not sent.", title, None, None)
+        logger.info(
+            "Skipping Discord DM for %s (%s); user %s is unsubscribed.",
+            title,
+            rating_key,
+            plex_username,
+        )
+        return SendOutcome(False, False, "User is unsubscribed; reminder not sent.", title, None, None)
 
     watch_history = has_user_watched_media(plex_username, rating_key, media_type)
     if watch_history:
         watched_title = watch_history[0].get('title', title)
         request_db.update({'tautulli_watch_date': datetime.now().isoformat()}, Request.id == request_id)
-        logger.info("Marking %s as watched for %s; no reminder sent.", watched_title, email_value)
-        return SendOutcome(False, True, f"{watched_title} already appears watched; reminder not sent.", title, None, None)
+        logger.info(
+            "Marking %s as watched for %s; no reminder sent.",
+            watched_title,
+            plex_username,
+        )
+        return SendOutcome(
+            False,
+            True,
+            f"{watched_title} already appears watched; reminder not sent.",
+            title,
+            None,
+            None,
+        )
 
     if title == "Unknown":
         metadata = get_tautulli_metadata(rating_key)
@@ -841,7 +1001,11 @@ def _attempt_send_request(
 
     email_record = email_db.search((Email.email == email_value) & (Email.tmdbId == str(tmdb_id)))
     if email_record:
-        logger.info("Skipping email to %s for %s (already notified).", email_value, title)
+        logger.info(
+            "Skipping reminder to Discord ID %s for %s (already notified).",
+            discord_id,
+            title,
+        )
         request_db.update({'email_sent': True}, Request.id == request_id)
         return SendOutcome(False, True, "Reminder already sent for this title.", title, None, None)
 
@@ -850,8 +1014,8 @@ def _attempt_send_request(
         next_allowed = _parse_iso(effective_user_record.get('next_email_at'))
         if next_allowed != datetime.min and now_dt < next_allowed:
             logger.info(
-                "Skipping email to %s; next reminder allowed at %s.",
-                email_value,
+                "Skipping reminder to Discord ID %s; next reminder allowed at %s.",
+                discord_id,
                 next_allowed.strftime("%Y-%m-%d %H:%M"),
             )
             return SendOutcome(False, False, f"Cooldown active until {next_allowed.strftime('%Y-%m-%d %H:%M')}.", title, None, None)
@@ -862,37 +1026,33 @@ def _attempt_send_request(
             last_sent_at = datetime.fromisoformat(legacy_last_email[0]['email_sent_at'])
             if now_dt - last_sent_at < timedelta(hours=HOURS_BETWEEN_EMAILS):
                 logger.info(
-                    "Skipping email to %s as it was sent within the last %s hours.",
-                    email_value,
+                    "Skipping reminder to Discord ID %s as it was sent within the last %s hours.",
+                    discord_id,
                     HOURS_BETWEEN_EMAILS,
                 )
                 return SendOutcome(False, False, "Reminder recently sent; cooldown in effect.", title, None, None)
 
-    email_subject = f"Plex Reminder: {title} is available and unwatched"
-    email_body, unsubscribe_url = build_email_body(
+    discord_message = build_discord_message(
         plex_username=plex_username,
         media_type=media_type,
         title=title,
         plex_url=plex_url,
         poster_url=poster_url,
         mobile_url=mobile_url,
-        email_address=email_value,
     )
-
     if DEBUG_MODE:
         logger.debug(
-            "Preparing email send for request %s: recipient=%s, subject=%s, rating_key=%s, media_type=%s",
+            "Preparing Discord DM send for request %s: discord_id=%s, rating_key=%s, media_type=%s",
             request_id,
-            email_value,
-            email_subject,
+            discord_id,
             rating_key,
             media_type,
         )
     try:
-        recipient = send_email(email_value, email_subject, email_body, is_html=True, unsubscribe_url=unsubscribe_url)
+        recipient = send_discord_dm(discord_id, discord_message)
     except Exception:
         logger.exception(
-            "Email send failed for %s (%s) [request %s, rating_key=%s].",
+            "Discord DM send failed for %s (%s) [request %s, rating_key=%s].",
             email_value,
             title,
             request_id,
@@ -900,9 +1060,9 @@ def _attempt_send_request(
         )
         raise
     logger.info(
-        "Sent email to %s (%s) via %s for %s (%s).",
+        "Sent Discord DM to %s (Discord ID %s) via %s for %s (%s).",
         plex_username,
-        email_value,
+        discord_id,
         recipient,
         title,
         rating_key,
@@ -921,7 +1081,7 @@ def _attempt_send_request(
                 'title': title,
                 'poster_url': poster_url,
                 'mediaType': media_type,
-                'media_added_at': media_raw or record.get('createdAt'),
+                'media_added_at': media_raw or record.get('createdAt') or "",
                 'email_sent_at': sent_at.isoformat(),
                 'date_watched': None
             },
@@ -930,7 +1090,7 @@ def _attempt_send_request(
         if allow_sleep:
             time.sleep(3)
     else:
-        logger.info("Debug mode active; skipped persisting send for %s.", email_value)
+        logger.info("Debug mode active; skipped persisting send for Discord ID %s.", discord_id)
 
     return SendOutcome(True, True, f"Sent reminder for {title} to {recipient}.", title, recipient, sent_at)
 
@@ -955,6 +1115,45 @@ def transform_plex_url(plex_url):
     return browser_url, None
     
     
+def _discord_headers() -> dict:
+    token = (DISCORD_BOT_TOKEN or '').strip()
+    if not token:
+        raise RuntimeError("DISCORD_BOT_TOKEN is not configured")
+    return {"Authorization": f"Bot {token}", "Content-Type": "application/json"}
+
+
+def send_discord_dm(discord_user_id: str, message: str) -> str:
+    if not discord_user_id:
+        raise ValueError("Discord user ID is required")
+    if not message or not message.strip():
+        raise ValueError("Discord message content is empty")
+    if len(message) > 2000:
+        logger.warning("Discord message exceeds 2000 characters; it may be rejected by Discord.")
+    headers = _discord_headers()
+    channel_payload = {"recipient_id": str(discord_user_id)}
+    channel_resp = requests.post(
+        "https://discord.com/api/v10/users/@me/channels",
+        json=channel_payload,
+        headers=headers,
+        timeout=(5, 15),
+    )
+    channel_resp.raise_for_status()
+    channel_data = channel_resp.json()
+    channel_id = channel_data.get("id")
+    if not channel_id:
+        raise RuntimeError("Discord DM channel creation failed; no channel ID returned")
+    message_payload = {"content": message}
+    message_resp = requests.post(
+        f"https://discord.com/api/v10/channels/{channel_id}/messages",
+        json=message_payload,
+        headers=headers,
+        timeout=(5, 15),
+    )
+    message_resp.raise_for_status()
+    logger.debug("Discord DM sent to %s via channel %s", discord_user_id, channel_id)
+    return channel_id
+
+
 # Send email notification
 def send_email(to_address, subject, body, is_html=False, unsubscribe_url=None):
     if DEBUG_MODE:
@@ -964,6 +1163,9 @@ def send_email(to_address, subject, body, is_html=False, unsubscribe_url=None):
             subject,
             is_html,
         )
+    smtp_server = (SMTP_SERVER or "").strip()
+    if not smtp_server:
+        raise RuntimeError("SMTP_SERVER is not configured")
     if is_html:
         msg = MIMEMultipart("alternative")
         msg.attach(MIMEText(body, "html"))
@@ -978,9 +1180,13 @@ def send_email(to_address, subject, body, is_html=False, unsubscribe_url=None):
     else:
         msg['From'] = from_address
     # When debugging, redirect the email to ourselves and avoid contacting watchers.
-    actual_recipient = to_address
+    actual_recipient = (to_address or "").strip()
+    if not actual_recipient:
+        raise RuntimeError("Recipient email address is missing")
     if DEBUG_MODE:
-        actual_recipient = DEBUG_EMAIL or FROM_EMAIL_ADDRESS
+        actual_recipient = (DEBUG_EMAIL or FROM_EMAIL_ADDRESS or "").strip()
+        if not actual_recipient:
+            raise RuntimeError("Debug email recipient is not configured")
         logger.info("Debug email mode enabled; redirecting email originally for %s to %s.", to_address, actual_recipient)
         msg['To'] = actual_recipient
         msg['X-Debug-Original-To'] = to_address
@@ -1013,9 +1219,9 @@ def send_email(to_address, subject, body, is_html=False, unsubscribe_url=None):
     try:
         ssl_context = ssl.create_default_context()
         if SMTP_ENCRYPTION == "SSL":
-            smtp_conn = smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, context=ssl_context)
+            smtp_conn = smtplib.SMTP_SSL(smtp_server, SMTP_PORT, context=ssl_context)
         else:
-            smtp_conn = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
+            smtp_conn = smtplib.SMTP(smtp_server, SMTP_PORT)
         with smtp_conn as server:
             if SMTP_ENCRYPTION == "STARTTLS":
                 if DEBUG_MODE:
@@ -1071,7 +1277,7 @@ def main():
         logger.info("Aborting run due to Tautulli connectivity issues.")
         return
 
-    logger.info("Step 1: Check watch status for unwatched sent emails")
+    logger.info("Step 1: Check watch status for unwatched sent reminders")
     if should_run_watch_status_check():
         try:
             check_unwatched_emails_status()
@@ -1104,6 +1310,7 @@ def main():
         requested_by_email_raw = request['requestedBy']['email']
         requested_by_email = (requested_by_email_raw or "").strip()
         _ensure_email_user_record(requested_by_email)
+        discord_id = _extract_discord_id(request.get('requestedBy', {}))
 
         if not request_db.search(Request.id == request_id):
             media = request['media']
@@ -1140,6 +1347,7 @@ def main():
                 'mediaType': media_type,
                 'plexUsername': requested_by_username,
                 'email': requested_by_email,
+                'discordId': discord_id,
                 'plexUrl': plex_url,
                 'mobilePlexUrl': mobile_url,
                 'posterUrl': poster_url,
@@ -1202,7 +1410,7 @@ def main():
 
         while candidates:
             if DEBUG_MODE and debug_emails_sent >= DEBUG_MAX_EMAILS:
-                logger.info("Debug mode email limit of %s reached; stopping run.", DEBUG_MAX_EMAILS)
+                logger.info("Debug mode reminder limit of %s reached; stopping run.", DEBUG_MAX_EMAILS)
                 return
 
             _, request = candidates[0]
@@ -1231,7 +1439,7 @@ def main():
                     request.get('ratingkey'),
                 )
                 if debug_emails_sent >= DEBUG_MAX_EMAILS:
-                    logger.info("Debug mode sent %s emails; exiting early.", debug_emails_sent)
+                    logger.info("Debug mode sent %s reminders; exiting early.", debug_emails_sent)
                     return
 
             candidates.pop(0)

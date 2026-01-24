@@ -5,7 +5,7 @@ import time
 from datetime import datetime
 from threading import Thread
 
-from flask import (
+from flask import (  # pyright: ignore[reportMissingImports]
     Flask,
     flash,
     get_flashed_messages,
@@ -16,7 +16,18 @@ from flask import (
     send_from_directory,
     url_for,
 )
-from flask_limiter import Limiter
+try:
+    from flask_limiter import Limiter  # pyright: ignore[reportMissingImports]
+except ModuleNotFoundError:  # pragma: no cover - optional dependency for deployments
+    class Limiter:  # type: ignore[too-many-instance-attributes]
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def limit(self, *args, **kwargs):
+            def _decorator(func):
+                return func
+
+            return _decorator
 
 from forgotten_movies import (
     add_unsubscribed_email,
@@ -40,7 +51,7 @@ from forgotten_movies import (
     _decrypt_email,
     build_resubscribe_url,
 )
-from filelock import Timeout
+from filelock import Timeout  # pyright: ignore[reportMissingImports]
 
 from job_runner import acquire_job_lock, execute_job
 
@@ -101,7 +112,7 @@ limiter = Limiter(
 )
 
 
-def _audit_log(action: str, email: str, status: str, reason: str = None):
+def _audit_log(action: str, email: str, status: str, reason: str | None = None):
     ip_address = get_real_ip()
     method = request.method
 
@@ -259,7 +270,7 @@ def send_request_now(request_id):
 
     email_value = (record.get("email") or "").strip()
     if not email_value:
-        flash("Request is missing an email address.", "todo-error")
+        flash("Request is missing a Discord ID.", "todo-error")
         return redirect(url_for("index", _anchor="todo-card"))
 
     now = datetime.now()
@@ -278,8 +289,8 @@ def send_request_now(request_id):
             now_dt=now,
         )
     except Exception as exc:
-        APP_LOGGER.exception("Failed to send email for request %s: %s", identifier, exc)
-        flash(f"Failed to send email: {str(exc)}", "todo-error")
+        APP_LOGGER.exception("Failed to send reminder for request %s: %s", identifier, exc)
+        flash(f"Failed to send reminder: {str(exc)}", "todo-error")
         return redirect(url_for("index", _anchor="todo-card"))
 
     if not outcome.sent:

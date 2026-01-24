@@ -1,0 +1,11 @@
+Hallo {{ plex_username }},
+
+deine {{ media_type }}-Anfrage "{{ title }}" ist seit {{ time_since_text }} verfügbar und wartet in Plex auf dich.
+
+Plex-Link: {{ plex_url }}
+Mobil-Link: {{ mobile_url }}
+Poster: {{ poster_url }}
+Anfragen: {{ request_url }}
+
+Viele Grüße
+{{ admin_name }}

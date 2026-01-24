@@ -259,14 +259,14 @@
 {% block content %}
 {% if scheduler_disabled %}
 <div class="message info">
-    <span>Scheduler is currently disabled. Automated API calls and emails are paused.</span>
+    <span>Scheduler is currently disabled. Automated API calls and reminders are paused.</span>
     <a href="{{ url_for('settings') }}" style="color:#c5cae9; text-decoration: underline;">Enable in Settings</a>
 </div>
 {% endif %}
 <div class="card" id="run-now-card">
     <h2>Run Now</h2>
     <p>Kick off the Forgotten Movies check immediately instead of waiting for the next schedule.</p>
-    <p>This will first check overseerr for new requests then check tautulli for unwatched old requests and then email users.</p>
+    <p>This will first check Overseerr for new requests, then check Tautulli for unwatched older requests, then send Discord reminders.</p>
     <form method="post" action="{{ url_for('run_now') }}">
         <button type="submit">Run Job Now</button>
     </form>
@@ -312,7 +312,7 @@
                     <th class="sortable" data-sort-type="text">Title</th>
                     <th class="sortable" data-sort-type="text">Media</th>
                     <th class="sortable" data-sort-type="text">Plex User</th>
-                    <th class="sortable" data-sort-type="text">Email</th>
+                    <th class="sortable" data-sort-type="text">Discord</th>
                     <th class="sortable" data-sort-type="date">Media Added</th>
                     <th class="actions-col">Actions</th>
                 </tr>
@@ -323,7 +323,7 @@
                     <td>{{ item.title }}</td>
                     <td>{{ item.media_type|title }}</td>
                     <td>{{ item.plex_username }}</td>
-                    <td>{{ item.email }}</td>
+                    <td>{{ item.discord_id or item.email }}</td>
                     <td data-sort-value="{{ item.media_added_sort }}">{{ item.created_at_display }}</td>
                     <td class="actions-cell">
                         <div class="action-menu">
@@ -350,7 +350,7 @@
     {% endif %}
 </div>
 <div class="card">
-    <h2>Sent Emails</h2>
+    <h2>Sent Reminders</h2>
     {% if recent_messages %}
     <div class="local-flashes">
         {% for category, text in recent_messages %}
@@ -390,7 +390,7 @@
                     <th class="sortable" data-sort-type="text">Title</th>
                     <th class="sortable" data-sort-type="text">Media</th>
                     <th class="sortable" data-sort-type="text">Plex User</th>
-                    <th class="sortable" data-sort-type="text">Email</th>
+                    <th class="sortable" data-sort-type="text">Discord</th>
                     <th class="sortable" data-sort-type="date">Media Added</th>
                     <th class="sortable" data-sort-type="date">Sent At</th>
                     <th class="sortable" data-sort-type="date">Date Watched</th>
@@ -402,7 +402,7 @@
                     <td>{{ item.title }}</td>
                     <td>{{ item.media_type|title }}</td>
                     <td>{{ item.plex_username }}</td>
-                    <td>{{ item.email }}</td>
+                    <td>{{ item.discord_id or item.email }}</td>
                     <td data-sort-value="{{ item.media_added_sort }}">{{ item.media_added_display }}</td>
                     <td data-sort-value="{{ item.email_sent_at_sort }}">{{ item.email_sent_at_display }}</td>
                     <td data-sort-value="{{ item.date_watched_sort }}">{{ item.date_watched_display }}</td>
@@ -412,7 +412,7 @@
         </table>
     </div>
     {% else %}
-        <p>No reminder emails have been sent yet.</p>
+    <p>No reminders have been sent yet.</p>
     {% endif %}
 </div>
 <div class="card" id="unsubscribe-card">
