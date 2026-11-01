@@ -1,7 +1,7 @@
-﻿Flask==2.3.2
+Flask==2.3.2
 requests==2.31.0
 tinydb==4.8.0
-python-dotenv==1.0.0
+python-dotenv==1.2.2
 apscheduler
 gunicorn
 Jinja2>=3.1.3
